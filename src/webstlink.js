@@ -90,6 +90,7 @@ export default class WebStlink {
         };
         this._callback_mutex = new Mutex;
         this._cache = null;
+        this._max_retry = 10;
     }
 
     add_callback(name, handler) {
@@ -218,41 +219,73 @@ export default class WebStlink {
     }
 
     async find_mcus_by_core() {
-        let cpuid = await this._stlink.get_debugreg32(CPUID_REG);
-        if (cpuid == 0) {
-            throw new libstlink.exceptions.Exception("Not connected to CPU");
+        let err = "";
+
+        for (let retry = 0; retry < this._max_retry; retry++) {
+            console.log(`find_mcus_by_core: ${retry+1}/${this._max_retry}`)
+
+            let cpuid = await this._stlink.get_debugreg32(CPUID_REG);
+            if (cpuid == 0) {
+                err = "Not connected to CPU";
+                continue;
+            }
+            this._dbg.verbose("CPUID:  " + H32(cpuid));
+            let partno = (0xfff & (cpuid >> 4));
+            let mcus = libstlink.DEVICES.find(mcus => (mcus.part_no == partno));
+            if (mcus) {
+                this._mcus_by_core = mcus;
+                return;
+            }
+            
+            err = `PART_NO: 0x${H24(partno)} is not supported`;
         }
-        this._dbg.verbose("CPUID:  " + H32(cpuid));
-        let partno = (0xfff & (cpuid >> 4));
-        let mcus = libstlink.DEVICES.find(mcus => (mcus.part_no == partno));
-        if (mcus) {
-            this._mcus_by_core = mcus;
-            return;
-        }
+
         
-        throw new libstlink.exceptions.Exception(`PART_NO: 0x${H24(partno)} is not supported`);
+        throw new libstlink.exceptions.Exception(err);
     }
 
     async find_mcus_by_devid() {
-        let idcode = await this._stlink.get_debugreg32(this._mcus_by_core.idcode_reg);
-        this._dbg.verbose("IDCODE: " + H32(idcode));
-        let devid = (0xfff & idcode);
-        let mcus = this._mcus_by_core.devices.find(mcus => (mcus.dev_id == devid));
-        if (mcus) {
-            this._mcus_by_devid = mcus;
-            return;
+        let err = "";
+
+        for (let retry = 0; retry < this._max_retry; retry++) {
+            console.log(`find_mcus_by_devid: ${retry+1}/${this._max_retry}`)
+
+            let idcode = await this._stlink.get_debugreg32(this._mcus_by_core.idcode_reg);
+            this._dbg.verbose("IDCODE: " + H32(idcode));
+            let devid = (0xfff & idcode);
+            let mcus = this._mcus_by_core.devices.find(mcus => (mcus.dev_id == devid));
+            if (mcus) {
+                this._mcus_by_devid = mcus;
+                return;
+            }
+            
+            err = `DEV_ID: 0x${H24(devid)} is not supported`;
         }
-        throw new libstlink.exceptions.Exception(`DEV_ID: 0x${H24(devid)} is not supported`);
+
+        
+        throw new libstlink.exceptions.Exception(err);
     }
 
     async find_mcus_by_flash_size() {
-        this._flash_size = await this._stlink.get_debugreg16(this._mcus_by_devid.flash_size_reg);
-        this._mcus = this._mcus_by_devid.devices.filter(
-            mcu => (mcu.flash_size == this._flash_size)
-        );
-        if (this._mcus.length == 0) {
-            throw new libstlink.exceptions.Exception(`Connected CPU with DEV_ID: 0x${H24(this._mcus_by_devid.dev_id)} and FLASH size: ${this._flash_size}KB is not supported`);
+        let err = "";
+
+        for (let retry = 0; retry < this._max_retry; retry++) {
+            console.log(`find_mcus_by_flash_size: ${retry+1}/${this._max_retry}`)
+
+            this._flash_size = await this._stlink.get_debugreg16(this._mcus_by_devid.flash_size_reg);
+            this._mcus = this._mcus_by_devid.devices.filter(
+                mcu => (mcu.flash_size == this._flash_size)
+            );
+
+            if (this._mcus.length !== 0) {
+                return;
+            }
+            
+            err = `Connected CPU with DEV_ID: 0x${H24(this._mcus_by_devid.dev_id)} and FLASH size: ${this._flash_size}KB is not supported`;
         }
+
+        
+        throw new libstlink.exceptions.Exception(err);
     }
 
     fix_cpu_type(cpu_type) {
